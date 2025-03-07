@@ -48,7 +48,10 @@ sudo apt upgrade -y
 sudo apt install openjdk-11-jdk -y 
 
 ## Install docer engine
-sudo apt install docker.io -y 
+sudo apt install docker.io -y
+
+## Run the sonarqube docker container
+docker run -d -p 9000:9000 sonarqube
 
 ```
 
@@ -154,10 +157,156 @@ fi
 
 ```
 
-## Step 6 >>Display GitLab login URL
+## Step 6 >> Display GitLab login URL
 
 ```
 ### Run the below mentioned commend, replcae the IP address with your server IP
 
 echo "Access GitLab at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)/" 
+```
+
+## Clone the Gitlab project repository 
+
+Once the Ec2 instance is ready to work as a gitlab runner worker,
+
+then clone the gitlab project with your local system from where you need to upload your project data for CI-CD piple build.
+
+Copy the gitlab project url >> Got to Gitlab project >> Find the Clone with HTTPS option >> copy the URL and clone with your EC2 instance or local system from where you want to upload the project data.
+
+```
+
+
+To clone the gitlab repository >> git clone https://gitlab.com/anand40090/springboot.git
+It will craete the springboot folder in your system, save your project data into it and keep it ready to be uploaded on gitlab reposiroty.
+
+To add your project data to commit on gitlab reposiorty >> go to project springboot project folder >> git add *
+
+To commit the project data on gitlab repository >> git commit -m '1st commit'
+
+To push the data to gitlab repository >> git push >> input username password when it will prompt for authentication 
+ 
+
+```
+
+## Configure sonarqube to intigrate with Gitlab
+
+1. At very bigining we have already downloaded the sonarqube docker image and spined the container of port 9000,
+   by running commnd "docker run -d -p 9000:9000 sonarqube"
+   
+3. Run docker ps -a coommand on the Ubuntu system to check the docker container status of Sonarqube
+   
+4. Use the EC2 Ubuntu instance ip address:9000 in browser to access the sonarqube dashboard
+
+5. Default username and password for sonarqube is admin / admin
+
+6. Generate the token from sonarqube for integration with gitlab >> Login sonarqube >> Go to My Account >> Security >> Generate Token
+
+7. Save the generated token to be hardcode in Gitlab variable
+
+## Intigrate Sonarqube with Gitlab
+
+1. Login to gitlab account >> go to project >> go to setting >> CI-CD >> Find for variables >> Expand
+
+2. Create two variable - 1] SONAR_TOKEN >> Input the token generated from sonqrqube 2] SONAR_HOST_URL >> Input your sonarqube URL (http://13.126.187.216:9000/)
+
+## Create AWS ECR and IAM User with Secret and Access key to push to Docker Image on ECR
+
+1. Create ECR reposiroty >> Go to AWS Dashboard >> Go to ECR >> Create Reposiorty
+   
+2. Create AWS User to authenticate the ECR and push docker image to ECR >> Go to AWS Dashboard >> IAM User >> Create User >> Download the Secret Key and Access Key of the user
+   
+3. Create Variable in Gitlab to call during CI-CD pipeline >> Go to Gitlab account >> go to project >> go to setting >> CI-CD >> Find for variables >> Expand
+
+4. Create 1] AWS_Access_KEY_ID 2] AWS_Default_Region 3] AWS_Secret_access_key
+
+## Create Variables in the Gitlab
+
+Before creating the .gitlab-ci.yml, add the following variables in GitLab project settings (Settings > CI / CD > Variables):
+
+1. SONARQUBE_URL: The URL of your SonarQube instance (e.g., http://sonarqube.local).
+
+2. SONARQUBE_TOKEN: Your SonarQube token.
+
+3. DOCKER_REGISTRY: The Docker registry (e.g., docker.io).
+
+4. DOCKER_USERNAME: Your Docker Hub username.
+
+5. DOCKER_PASSWORD: Your Docker Hub password or access token.
+
+6. AWS_ACCESS_KEY_ID: AWS Access Key ID for EKS access.
+
+7. AWS_SECRET_ACCESS_KEY: AWS Secret Access Key for EKS access.
+
+8. AWS_DEFAULT_REGION: AWS region where your EKS cluster is hosted (e.g., us-east-1).
+
+9. ECR_REPO_NAME: The ECR repository name where the image will be pushed (optional if pushing to DockerHub).
+
+10. KUBECONFIG: The kubeconfig file to access the EKS cluster (can be configured using aws eks update-kubeconfig).
+
+
+## Create .gitlab-ci.yml file in the gitlab project reposiroty to run the CI-CD pipeline
+
+Got to gitlab project >> create the .gitlab-ci-.yml file
+
+Once this file is created and commited over the gitlab project, it will trigger the CI-CD pipeline and start the stages as mentioned in the file.
+
+```
+stages:
+  - build
+  - sonar_scan
+  - docker_build
+  - docker_push
+  - deploy
+
+before_script:
+  - echo "Setting up Docker and AWS CLI"
+  - apk add --no-cache curl git bash python3 py3-pip
+  - pip3 install awscli
+  - aws --version
+  - echo "$AWS_ACCESS_KEY_ID" | aws configure set aws_access_key_id
+  - echo "$AWS_SECRET_ACCESS_KEY" | aws configure set aws_secret_access_key
+  - echo "$AWS_DEFAULT_REGION" | aws configure set region
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+# Build the Maven project
+build_maven:
+  image: maven:3.8.5-jdk-11  
+  stage: build
+  script:
+    - echo "Building Maven project"
+    - mvn clean install $MAVEN_CLI_OPTS
+
+# Run SonarQube analysis
+sonar_scan:
+  stage: sonar_scan
+  script:
+    - echo "Running SonarQube scan"
+    - mvn sonar:sonar -Dsonar.host.url=$SONARQUBE_URL -Dsonar.login=$SONARQUBE_TOKEN
+
+# Build the Docker image
+docker_build:
+  stage: docker_build
+  script:
+    - echo "Building Docker image"
+    - docker build -t $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$CI_COMMIT_REF_NAME .
+
+# Push the Docker image to Docker Hub
+docker_push:
+  stage: docker_push
+  script:
+    - echo "Pushing Docker image to Docker Hub"
+    - docker push $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$CI_COMMIT_REF_NAME
+# Deploy the Docker image to EKS
+deploy_to_eks:
+  stage: deploy
+  script:
+    - echo "Setting up Kubernetes configuration for EKS"
+    - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+    - kubectl get svc
+    - echo "Deploying Docker image to EKS"
+    - kubectl set image deployment/$KUBERNETES_DEPLOYMENT_NAME $KUBERNETES_DEPLOYMENT_NAME=$DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$CI_COMMIT_REF_NAME
+    - kubectl rollout status deployment/$KUBERNETES_DEPLOYMENT_NAME
+  only:
+    - main  # Run this job only on the main branch (adjust if needed)    
+
 ```
