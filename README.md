@@ -134,7 +134,7 @@ sudo docker ps -a
 echo "Waiting for GitLab to initialize..." sleep 60
 ```
 
-## Step 5 >> Retrieve GitLab root user password
+## Step 5 >> Retrieve GitLab root user password for firsttime login, post that you may change the password
 
 ```
 ## Run the below mentioned command to retrive the Girlab eoot user password
